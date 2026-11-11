@@ -4,16 +4,14 @@
 考え方：きょう（日本時間）から7日前にアカデミーがあれば、その回の宿題を受講者へ送る。
 GitHub Actions から毎朝1回呼ばれます。アカデミーのない日は何もしません。
 
-読むファイル
-  homework/reminder_schedule.csv   開催日・コース・宿題
-  homework/reminder_people.csv     氏名・コース・LINE WORKS ID
-認証情報は環境変数（GitHub の Secrets）から読みます。
+予定と宿題は Notion の「📅 アカデミーの予定と宿題」を直接見ます。
+Notionを書き換えれば、その日から反映されます。GitHubは触らなくて大丈夫です。
 """
 import csv, datetime, io, json, os, sys, time, urllib.request, urllib.parse
 
 HERE   = os.path.dirname(__file__)
-SCHED  = os.path.join(HERE, 'reminder_schedule.csv')
 PEOPLE = os.path.join(HERE, 'reminder_people.csv')
+SCHED_DB   = '25129885-cba7-4036-a125-80e7337db424'   # 📅 アカデミーの予定と宿題
 NOTION_URL = 'https://app.notion.com/p/aaba4eb8935a44ed8a030e68ac9d0b57'
 DRY = '--dry-run' in sys.argv
 
@@ -25,9 +23,44 @@ def env(k):
     return v
 
 
-def rows(path):
-    with io.open(path, encoding='utf-8') as fh:
-        return list(csv.DictReader(fh))
+# ---------- Notion ----------
+def plain(p):
+    if p is None:
+        return ''
+    t = p.get('type')
+    if t in ('title', 'rich_text'):
+        return ''.join(x.get('plain_text', '') for x in p[t])
+    if t == 'select':
+        return (p['select'] or {}).get('name', '')
+    if t == 'checkbox':
+        return p['checkbox']
+    if t == 'date':
+        return (p['date'] or {}).get('start', '') or ''
+    return ''
+
+
+def sessions_on(day):
+    """その日に開催されたアカデミーの回を Notion から取る"""
+    body = json.dumps({
+        'filter': {'property': '開催日', 'date': {'equals': day}},
+        'page_size': 20}).encode()
+    req = urllib.request.Request(
+        'https://api.notion.com/v1/databases/%s/query' % SCHED_DB, data=body,
+        headers={'Authorization': 'Bearer ' + env('NOTION_TOKEN'),
+                 'Notion-Version': '2022-06-28',
+                 'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        rows = json.load(r)['results']
+    out = []
+    for x in rows:
+        p = x['properties']
+        out.append({
+            '内容':   plain(p.get('内容')),
+            'コース': plain(p.get('コース')),
+            '宿題':   plain(p.get('宿題')).strip(),
+            '送らない': bool(plain(p.get('送らない'))),
+        })
+    return out
 
 
 # ---------- LINE WORKS ----------
@@ -74,38 +107,38 @@ def send(token, user_id, text):
 def main():
     jst = datetime.timezone(datetime.timedelta(hours=9))
     today = datetime.datetime.now(jst).date()
-    target = today - datetime.timedelta(days=7)
+    target = (today - datetime.timedelta(days=7)).isoformat()
 
-    sched = [r for r in rows(SCHED) if r['開催日'] == target.isoformat()]
+    sched = sessions_on(target)
     if not sched:
         print('%s の7日前（%s）にアカデミーはありません。何もしません。' % (today, target))
         return
 
-    people = rows(PEOPLE)
+    with io.open(PEOPLE, encoding='utf-8') as fh:
+        people = list(csv.DictReader(fh))
+
     msgs = []
     for s in sched:
-        if '送信しない' in (s.get('確認') or ''):
-            print('%s %s は送信対象外です（%s）' % (s['開催日'], s['コース'], s['確認']))
+        if s['送らない']:
+            print('%s %s は「送らない」がチェックされています。' % (target, s['内容']))
             continue
-        hw = (s.get('宿題') or '').strip()
-        if not hw:
-            print('⚠ %s %s の宿題が予定表に入っていません。送信を見送ります。'
-                  % (s['開催日'], s['コース']))
-            continue
+        when = '%s・%s' % (target.replace('-', '/'), s['コース'])
         for p in people:
             if p['コース'] != s['コース'] or p['送る'] != 'はい':
                 continue
             if not p['LINEWORKS_ID'].strip():
                 print('⚠ %s のLINE WORKS IDが空です。送れません。' % p['氏名'])
                 continue
-            text = (
-                '{name}さん\n'
-                'アカデミー（{d}・{course}）の宿題のリマインドです。\n\n'
-                '■ {hw}\n\n'
-                '提出はこちらから\n{url}\n\n'
-                '間に合わないときは、早めに声をかけてください。'
-            ).format(name=p['氏名'], d=s['開催日'].replace('-', '/'),
-                     course=s['コース'], hw=hw.replace('／', '\n■ '), url=NOTION_URL)
+            if s['宿題']:
+                body = ('アカデミー（%s）の宿題のリマインドです。\n\n' % when
+                        + '■ %s\n\n' % s['宿題'].replace('／', '\n■ '))
+            else:
+                # Notionに宿題が書かれていない回は、声かけだけ送る
+                body = ('アカデミー（%s）から1週間がたちました。\n\n' % when
+                        + '宿題は進みましたか。\n\n')
+            text = ('%sさん\n' % p['氏名'] + body
+                    + '提出はこちらから\n%s\n\n' % NOTION_URL
+                    + '間に合わないときは、早めに声をかけてください。')
             msgs.append((p['氏名'], p['LINEWORKS_ID'].strip(), text))
 
     if not msgs:
