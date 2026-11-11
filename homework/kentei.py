@@ -6,7 +6,8 @@ GitHub Actions から15分おきに呼ばれます。
 """
 import json, os, sys, time, urllib.request, urllib.parse
 
-DB_ID      = 'daf00cc1-a35f-4ad8-9f0e-c76b09e36c6c'   # 🎓 カリキュラム進行表
+DB_ID      = '27bb2a57-9f2a-49cf-b792-3efc60e19253'   # 🎓 カリキュラム進行表
+PEOPLE     = ['仙波洸', '中尾心音', '佐藤大佳']        # 受講者の列。増えたらここに足す
 CHANNEL_ID = '43ab6be2-f5cf-34e1-2dcb-a83f64d7d2ee'   # グループトーク「アカデミー」
 SEEN       = os.path.join(os.path.dirname(__file__), 'kentei_seen.json')
 INIT       = '--init' in sys.argv
@@ -35,11 +36,9 @@ def plain(p):
     return ''
 
 
-def passed_rows():
-    """状態が「合格」の行を取る"""
-    body = json.dumps({
-        'filter': {'property': '状態', 'select': {'equals': '合格'}},
-        'page_size': 100}).encode()
+def all_rows():
+    """進行表の全行を取る"""
+    body = json.dumps({'page_size': 100}).encode()
     req = urllib.request.Request(
         'https://api.notion.com/v1/databases/%s/query' % DB_ID, data=body,
         headers={'Authorization': 'Bearer ' + env('NOTION_TOKEN'),
@@ -96,17 +95,27 @@ def main():
         with open(SEEN, encoding='utf-8') as fh:
             seen = set(json.load(fh))
 
-    rows = passed_rows()
-    fresh = [r for r in rows if r['id'] not in seen]
+    rows = all_rows()
+
+    # 「◯◯さんの△△が合格」を1件とみなす。鍵は 行ID:氏名
+    passed = []
+    for r in rows:
+        p = r['properties']
+        item = plain(p.get('項目')) or '（項目が空）'
+        for who in PEOPLE:
+            if plain(p.get(who)) == '○合格':
+                passed.append(('%s:%s' % (r['id'], who), who, item))
+
+    fresh = [x for x in passed if x[0] not in seen]
 
     def save():
-        ids = [r['id'] for r in rows] + list(seen)
+        ids = [x[0] for x in passed] + list(seen)
         with open(SEEN, 'w', encoding='utf-8') as fh:
-            json.dump(ids[:1000], fh, ensure_ascii=False, indent=0)
+            json.dump(sorted(set(ids))[:2000], fh, ensure_ascii=False, indent=0)
 
     if INIT:
         save()
-        print('今「合格」の %d 件を通知済みにしました。' % len(rows))
+        print('今「○合格」の %d 件を通知済みにしました。' % len(passed))
         return
 
     if not fresh:
@@ -114,18 +123,8 @@ def main():
         return
 
     msgs = []
-    for r in fresh:
-        p = r['properties']
-        name = plain(p.get('受講者')) or '（受講者が空）'
-        item = plain(p.get('項目'))   or '（項目が空）'
-        date = plain(p.get('合格日'))
-        judge = plain(p.get('検定員'))
-        line = '🎉 %sさん、%s 検定 合格おめでとうございます！' % (name, item)
-        if date:
-            line += '\n\n合格日：%s' % date.replace('-', '/')
-        if judge:
-            line += '\n検定員：%s' % judge
-        msgs.append(line)
+    for _, who, item in fresh:
+        msgs.append('🎉 %sさん、%s 検定 合格おめでとうございます！' % (who, item))
 
     text = '\n\n―――\n\n'.join(msgs)
 
