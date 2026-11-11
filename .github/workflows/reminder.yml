@@ -19,6 +19,7 @@ jobs:
 
       - name: 7日前のアカデミーを確認して送る
         env:
+          NOTION_TOKEN:       ${{ secrets.NOTION_TOKEN }}
           LW_BOT_ID:          ${{ secrets.LW_BOT_ID }}
           LW_CLIENT_ID:       ${{ secrets.LW_CLIENT_ID }}
           LW_CLIENT_SECRET:   ${{ secrets.LW_CLIENT_SECRET }}
