@@ -1,0 +1,47 @@
+name: 宿題の提出通知
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # 15分おき（UTC基準だが間隔なので時差は関係なし）
+  workflow_dispatch:          # 手で動かすボタン
+
+permissions:
+  contents: write             # seen.json を書き戻すため
+
+concurrency:
+  group: homework-notify
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install --quiet cryptography
+
+      - name: 新しい提出を確認して送る
+        env:
+          NOTION_TOKEN:       ${{ secrets.NOTION_TOKEN }}
+          LW_BOT_ID:          ${{ secrets.LW_BOT_ID }}
+          LW_CLIENT_ID:       ${{ secrets.LW_CLIENT_ID }}
+          LW_CLIENT_SECRET:   ${{ secrets.LW_CLIENT_SECRET }}
+          LW_SERVICE_ACCOUNT: ${{ secrets.LW_SERVICE_ACCOUNT }}
+          LW_PRIVATE_KEY:     ${{ secrets.LW_PRIVATE_KEY }}
+        run: python homework/notify.py
+
+      - name: 送信済みの控えを保存
+        run: |
+          if [ -n "$(git status --porcelain homework/seen.json)" ]; then
+            git config user.name  "homework-bot"
+            git config user.email "actions@github.com"
+            git add homework/seen.json
+            git commit -m "送信済みの控えを更新"
+            git push
+          else
+            echo "控えに変化はありません。"
+          fi
