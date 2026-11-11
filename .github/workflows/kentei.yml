@@ -1,0 +1,47 @@
+name: 検定の合格通知
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # 15分おき
+  workflow_dispatch:          # 手で動かすボタン
+
+permissions:
+  contents: write             # kentei_seen.json を書き戻すため
+
+concurrency:
+  group: kentei-notify
+  cancel-in-progress: false
+
+jobs:
+  kentei:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install --quiet cryptography
+
+      - name: 新しい合格を確認して知らせる
+        env:
+          NOTION_TOKEN:       ${{ secrets.NOTION_TOKEN }}
+          LW_BOT_ID:          ${{ secrets.LW_BOT_ID }}
+          LW_CLIENT_ID:       ${{ secrets.LW_CLIENT_ID }}
+          LW_CLIENT_SECRET:   ${{ secrets.LW_CLIENT_SECRET }}
+          LW_SERVICE_ACCOUNT: ${{ secrets.LW_SERVICE_ACCOUNT }}
+          LW_PRIVATE_KEY:     ${{ secrets.LW_PRIVATE_KEY }}
+        run: python homework/kentei.py
+
+      - name: 通知済みの控えを保存
+        run: |
+          if [ -n "$(git status --porcelain homework/kentei_seen.json)" ]; then
+            git config user.name  "homework-bot"
+            git config user.email "actions@github.com"
+            git add homework/kentei_seen.json
+            git commit -m "合格の通知済み控えを更新"
+            git push
+          else
+            echo "控えに変化はありません。"
+          fi
